@@ -1,0 +1,236 @@
+package session_redis
+
+import (
+	"encoding/json"
+	"errors"
+	"time"
+
+	. "github.com/chefsgo/base"
+	"github.com/chefsgo/chef"
+	"github.com/chefsgo/util"
+	"github.com/gomodule/redigo/redis"
+)
+
+var (
+	errInvalidConnection = errors.New("Invalid connection")
+	errNotFound          = errors.New("NotFound")
+)
+
+type (
+	redisSessionDriver  struct{}
+	redisSessionConnect struct {
+		name    string
+		config  chef.SessionConfig
+		setting redisSessionSetting
+
+		client *redis.Pool
+	}
+	//配置文件
+	redisSessionSetting struct {
+		Server   string //服务器地址，ip:端口
+		Password string //服务器auth密码
+		Database string //数据库
+
+		Idle    int //最大空闲连接
+		Active  int //最大激活连接，同时最大并发
+		Timeout time.Duration
+	}
+)
+
+//连接
+func (driver *redisSessionDriver) Connect(name string, config chef.SessionConfig) (chef.SessionConnect, error) {
+	//获取配置信息
+	setting := redisSessionSetting{
+		Server: "127.0.0.1:6379", Password: "", Database: "",
+		Idle: 30, Active: 100, Timeout: 240,
+	}
+
+	if vv, ok := config.Setting["server"].(string); ok && vv != "" {
+		setting.Server = vv
+	}
+	if vv, ok := config.Setting["password"].(string); ok && vv != "" {
+		setting.Password = vv
+	}
+
+	//数据库，redis的0-16号
+	if v, ok := config.Setting["database"].(string); ok {
+		setting.Database = v
+	}
+
+	if vv, ok := config.Setting["idle"].(int64); ok && vv > 0 {
+		setting.Idle = int(vv)
+	}
+	if vv, ok := config.Setting["active"].(int64); ok && vv > 0 {
+		setting.Active = int(vv)
+	}
+	if vv, ok := config.Setting["timeout"].(int64); ok && vv > 0 {
+		setting.Timeout = time.Second * time.Duration(vv)
+	}
+	if vv, ok := config.Setting["timeout"].(string); ok && vv != "" {
+		td, err := util.ParseDuration(vv)
+		if err == nil {
+			setting.Timeout = td
+		}
+	}
+
+	return &redisSessionConnect{
+		name: name, config: config, setting: setting,
+	}, nil
+}
+
+//打开连接
+func (connect *redisSessionConnect) Open() error {
+	connect.client = &redis.Pool{
+		MaxIdle: connect.setting.Idle, MaxActive: connect.setting.Active, IdleTimeout: connect.setting.Timeout,
+		Dial: func() (redis.Conn, error) {
+			c, err := redis.Dial("tcp", connect.setting.Server)
+			if err != nil {
+				chef.Warning("session.redis.dial", err)
+				return nil, err
+			}
+
+			//如果有验证
+			if connect.setting.Password != "" {
+				if _, err := c.Do("AUTH", connect.setting.Password); err != nil {
+					c.Close()
+					chef.Warning("session.redis.auth", err)
+					return nil, err
+				}
+			}
+			//如果指定库
+			if connect.setting.Database != "" {
+				if _, err := c.Do("SELECT", connect.setting.Database); err != nil {
+					c.Close()
+					chef.Warning("session.redis.select", err)
+					return nil, err
+				}
+			}
+
+			return c, err
+		},
+		TestOnBorrow: func(c redis.Conn, t time.Time) error {
+			if time.Since(t) < time.Minute {
+				return nil
+			}
+			_, err := c.Do("PING")
+			return err
+		},
+	}
+
+	//打开一个试一下
+	conn := connect.client.Get()
+	defer conn.Close()
+	if err := conn.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+//关闭连接
+func (connect *redisSessionConnect) Close() error {
+	if connect.client != nil {
+		if err := connect.client.Close(); err != nil {
+			return err
+
+		}
+	}
+	return nil
+}
+
+//查询会话，
+func (connect *redisSessionConnect) Read(id string) (Map, error) {
+	if connect.client == nil {
+		return nil, errInvalidConnection
+	}
+
+	conn := connect.client.Get()
+	defer conn.Close()
+
+	val, err := redis.String(conn.Do("GET", id))
+	if err != nil {
+		return nil, err
+	}
+
+	m := Map{}
+	//待优化，统一JSON编码
+	// err = chef.JsonDecode([]byte(val), &m)
+	err = json.Unmarshal([]byte(val), &m)
+	if err != nil {
+		return nil, err
+	}
+
+	return m, nil
+}
+
+//更新会话
+func (connect *redisSessionConnect) Write(id string, value Map, expiry time.Duration) error {
+	if connect.client == nil {
+		return errInvalidConnection
+	}
+
+	conn := connect.client.Get()
+	defer conn.Close()
+
+	//待优化，统一JSON编码
+	// bytes, err := chef.JsonEncode(value)
+	bytes, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+
+	if expiry <= expiry {
+		expiry = connect.config.Expiry
+	}
+
+	args := []Any{
+		id, string(bytes),
+	}
+	if expiry > 0 {
+		args = append(args, "EX", int(expiry.Seconds()))
+	}
+
+	_, err = conn.Do("SET", args...)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+//删除会话
+func (connect *redisSessionConnect) Delete(id string) error {
+	if connect.client == nil {
+		return errInvalidConnection
+	}
+	conn := connect.client.Get()
+	defer conn.Close()
+
+	_, err := conn.Do("DEL", id)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+//删除会话
+func (connect *redisSessionConnect) Clear(prefix string) error {
+	if connect.client == nil {
+		return errInvalidConnection
+	}
+	conn := connect.client.Get()
+	defer conn.Close()
+
+	keys, err := redis.Strings(conn.Do("KEYS", prefix+"*"))
+	if err != nil {
+		return err
+	}
+
+	for _, key := range keys {
+		_, err := conn.Do("DEL", key)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
