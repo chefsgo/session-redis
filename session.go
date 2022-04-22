@@ -1,7 +1,6 @@
 package session_redis
 
 import (
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -152,9 +151,7 @@ func (connect *redisSessionConnect) Read(id string) (Map, error) {
 	}
 
 	m := Map{}
-	//待优化，统一JSON编码
-	// err = chef.JsonDecode([]byte(val), &m)
-	err = json.Unmarshal([]byte(val), &m)
+	err = chef.JSONUnmarshal([]byte(val), &m)
 	if err != nil {
 		return nil, err
 	}
@@ -171,9 +168,7 @@ func (connect *redisSessionConnect) Write(id string, value Map, expiry time.Dura
 	conn := connect.client.Get()
 	defer conn.Close()
 
-	//待优化，统一JSON编码
-	// bytes, err := chef.JsonEncode(value)
-	bytes, err := json.Marshal(value)
+	bytes, err := chef.JSONMarshal(value)
 	if err != nil {
 		return err
 	}
