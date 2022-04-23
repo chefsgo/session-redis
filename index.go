@@ -1,13 +1,13 @@
 package session_redis
 
 import (
-	"github.com/chefsgo/chef"
+	"github.com/chefsgo/session"
 )
 
-func Driver() chef.SessionDriver {
-	return &redisSessionDriver{}
+func Driver() session.Driver {
+	return &redisDriver{}
 }
 
 func init() {
-	chef.Register("redis", Driver())
+	session.Register("redis", Driver())
 }

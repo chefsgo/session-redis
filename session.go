@@ -5,7 +5,9 @@ import (
 	"time"
 
 	. "github.com/chefsgo/base"
-	"github.com/chefsgo/chef"
+	"github.com/chefsgo/codec"
+	"github.com/chefsgo/log"
+	"github.com/chefsgo/session"
 	"github.com/chefsgo/util"
 	"github.com/gomodule/redigo/redis"
 )
@@ -16,16 +18,16 @@ var (
 )
 
 type (
-	redisSessionDriver  struct{}
-	redisSessionConnect struct {
+	redisDriver  struct{}
+	redisConnect struct {
 		name    string
-		config  chef.SessionConfig
-		setting redisSessionSetting
+		config  session.Config
+		setting redisSetting
 
 		client *redis.Pool
 	}
 	//配置文件
-	redisSessionSetting struct {
+	redisSetting struct {
 		Server   string //服务器地址，ip:端口
 		Password string //服务器auth密码
 		Database string //数据库
@@ -37,9 +39,9 @@ type (
 )
 
 //连接
-func (driver *redisSessionDriver) Connect(name string, config chef.SessionConfig) (chef.SessionConnect, error) {
+func (driver *redisDriver) Connect(name string, config session.Config) (session.Connect, error) {
 	//获取配置信息
-	setting := redisSessionSetting{
+	setting := redisSetting{
 		Server: "127.0.0.1:6379", Password: "", Database: "",
 		Idle: 30, Active: 100, Timeout: 240,
 	}
@@ -72,19 +74,19 @@ func (driver *redisSessionDriver) Connect(name string, config chef.SessionConfig
 		}
 	}
 
-	return &redisSessionConnect{
+	return &redisConnect{
 		name: name, config: config, setting: setting,
 	}, nil
 }
 
 //打开连接
-func (connect *redisSessionConnect) Open() error {
+func (connect *redisConnect) Open() error {
 	connect.client = &redis.Pool{
 		MaxIdle: connect.setting.Idle, MaxActive: connect.setting.Active, IdleTimeout: connect.setting.Timeout,
 		Dial: func() (redis.Conn, error) {
 			c, err := redis.Dial("tcp", connect.setting.Server)
 			if err != nil {
-				chef.Warning("session.redis.dial", err)
+				log.Warning("session.redis.dial", err)
 				return nil, err
 			}
 
@@ -92,7 +94,7 @@ func (connect *redisSessionConnect) Open() error {
 			if connect.setting.Password != "" {
 				if _, err := c.Do("AUTH", connect.setting.Password); err != nil {
 					c.Close()
-					chef.Warning("session.redis.auth", err)
+					log.Warning("session.redis.auth", err)
 					return nil, err
 				}
 			}
@@ -100,7 +102,7 @@ func (connect *redisSessionConnect) Open() error {
 			if connect.setting.Database != "" {
 				if _, err := c.Do("SELECT", connect.setting.Database); err != nil {
 					c.Close()
-					chef.Warning("session.redis.select", err)
+					log.Warning("session.redis.select", err)
 					return nil, err
 				}
 			}
@@ -126,7 +128,7 @@ func (connect *redisSessionConnect) Open() error {
 }
 
 //关闭连接
-func (connect *redisSessionConnect) Close() error {
+func (connect *redisConnect) Close() error {
 	if connect.client != nil {
 		if err := connect.client.Close(); err != nil {
 			return err
@@ -137,7 +139,7 @@ func (connect *redisSessionConnect) Close() error {
 }
 
 //查询会话，
-func (connect *redisSessionConnect) Read(id string) (Map, error) {
+func (connect *redisConnect) Read(id string) (Map, error) {
 	if connect.client == nil {
 		return nil, errInvalidConnection
 	}
@@ -151,7 +153,7 @@ func (connect *redisSessionConnect) Read(id string) (Map, error) {
 	}
 
 	m := Map{}
-	err = chef.JSONUnmarshal([]byte(val), &m)
+	err = codec.UnmarshalJSON([]byte(val), &m)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +162,7 @@ func (connect *redisSessionConnect) Read(id string) (Map, error) {
 }
 
 //更新会话
-func (connect *redisSessionConnect) Write(id string, value Map, expiry time.Duration) error {
+func (connect *redisConnect) Write(id string, value Map, expiry time.Duration) error {
 	if connect.client == nil {
 		return errInvalidConnection
 	}
@@ -168,7 +170,7 @@ func (connect *redisSessionConnect) Write(id string, value Map, expiry time.Dura
 	conn := connect.client.Get()
 	defer conn.Close()
 
-	bytes, err := chef.JSONMarshal(value)
+	bytes, err := codec.MarshalJSON(value)
 	if err != nil {
 		return err
 	}
@@ -192,7 +194,7 @@ func (connect *redisSessionConnect) Write(id string, value Map, expiry time.Dura
 }
 
 //删除会话
-func (connect *redisSessionConnect) Delete(id string) error {
+func (connect *redisConnect) Delete(id string) error {
 	if connect.client == nil {
 		return errInvalidConnection
 	}
@@ -208,7 +210,7 @@ func (connect *redisSessionConnect) Delete(id string) error {
 }
 
 //删除会话
-func (connect *redisSessionConnect) Clear(prefix string) error {
+func (connect *redisConnect) Clear(prefix string) error {
 	if connect.client == nil {
 		return errInvalidConnection
 	}
