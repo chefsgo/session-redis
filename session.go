@@ -5,7 +5,7 @@ import (
 	"time"
 
 	. "github.com/chefsgo/base"
-	"github.com/chefsgo/codec"
+	"github.com/chefsgo/chef"
 	"github.com/chefsgo/log"
 	"github.com/chefsgo/session"
 	"github.com/chefsgo/util"
@@ -153,7 +153,7 @@ func (connect *redisConnect) Read(id string) (Map, error) {
 	}
 
 	m := Map{}
-	err = codec.UnmarshalJSON([]byte(val), &m)
+	err = chef.UnmarshalJSON([]byte(val), &m)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +170,7 @@ func (connect *redisConnect) Write(id string, value Map, expiry time.Duration) e
 	conn := connect.client.Get()
 	defer conn.Close()
 
-	bytes, err := codec.MarshalJSON(value)
+	bytes, err := chef.MarshalJSON(value)
 	if err != nil {
 		return err
 	}
